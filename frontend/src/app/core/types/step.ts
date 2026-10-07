@@ -1,4 +1,5 @@
 import type { RowMeta } from './persistence';
+import type { StepBatchAnalysis } from '../utils/batch';
 
 /** 同步要求 */
 export type SyncRequirement = 'sync' | 'cross' | 'single';
@@ -56,17 +57,35 @@ export interface StepDraft {
   leader: string;
 }
 
-/** 顶升步骤视图：含累计量与校验结论 */
+/** 顶升步骤视图：含累计量、批次复核与校验结论 */
 export interface StepView extends Step {
   bridgeName: string;
   /** 本步及之前步骤的累计目标顶升量（mm） */
   cumulativeLiftMm: number;
   /** 累计顶升量与限位值的关系 */
   overLimit: boolean;
-  /** 该步骤的测点读数条数 */
+  /** 该步骤的测点读数条数（原始记录全部保留） */
   readingCount: number;
-  /** 同步偏差（mm），无读数为 null */
+  /** 复核批次数（按记录时间分组） */
+  batchCount: number;
+  /** 同步偏差（mm）：取当前有效批次，无有效批次为 null（旧批次不再混算） */
   syncDeviationMm: number | null;
+  /** 当前有效批次平均位移（mm），无有效批次为 null */
+  effectiveAverageMm: number | null;
+  /** 当前有效批次的记录时间，无有效批次为 null（此时沿用上一批结果=无结果） */
+  effectiveBatchAt: string | null;
+  /** 最近一批复核的记录时间，无读数为 null */
+  latestBatchAt: string | null;
+  /** 最近一批是否有效（覆盖全部应有测点）；无读数为 null */
+  latestBatchValid: boolean | null;
+  /** 最近一批缺测测点（无效提示用） */
+  latestMissingPoints: string[];
+  /** 当前有效批次超限测点数（达到位移限位或应力关注值） */
+  effectiveExceedCount: number;
+  /** 当前有效批次关注档测点数 */
+  effectiveWatchCount: number;
+  /** 整批复核分析（平均值 / 同步偏差 / 超限均以其 effectiveBatch 为准） */
+  batchAnalysis: StepBatchAnalysis;
   /** 校验结论文案 */
   validation: string;
 }

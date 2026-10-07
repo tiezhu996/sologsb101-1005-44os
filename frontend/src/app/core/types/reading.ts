@@ -27,13 +27,21 @@ export interface ReadingDraft {
   operator: string;
 }
 
-/** 测点读数视图：带步骤上下文与偏差 */
+/** 测点读数视图：带步骤上下文、所属批次与偏差 */
 export interface ReadingView extends Reading {
   stepSeq: number;
   bridgeId: string;
   bridgeName: string;
   syncRequirement: string;
-  /** 同步骤内相对平均位移的偏差（mm） */
+  /** 所属批次记录时间（即 recordedAt，批次 = 同步骤 + 同记录时间） */
+  batchRecordedAt: string;
+  /** 所属批次是否覆盖全部应有测点（无效批的读数不参与统计与到位判断） */
+  batchValid: boolean;
+  /** 所属批次是否为当前有效批次（最近一个完整批） */
+  batchEffective: boolean;
+  /** 所属批次缺测测点（无效时给出） */
+  batchMissingPoints: string[];
+  /** 同步骤内相对本批平均位移的偏差（mm）；所属批无效时为 0 */
   deviationMm: number;
   /** 是否超过限位值 */
   overLimit: boolean;

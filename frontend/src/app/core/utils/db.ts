@@ -107,14 +107,6 @@ export const db = new BridgeBearingDatabase();
 
 /* ============================== 演示数据播种 ============================== */
 
-function makeRandom(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state = (state * 1103515245 + 12345) % 2147483648;
-    return state / 2147483648;
-  };
-}
-
 function pad(value: number): string {
   return String(value).padStart(2, '0');
 }
@@ -216,12 +208,120 @@ const SEED_BRIDGES: SeedBridgeSpec[] = [
   },
 ];
 
+/** 播种用复核批次测点值 */
+interface SeedPoint {
+  code: string;
+  disp: number;
+  stress: number;
+}
+interface SeedBatch {
+  /** 整批同一记录时间 */
+  recordedAt: string;
+  points: SeedPoint[];
+}
+
+/**
+ * 显式编排的复核读数（key = 桥梁序号-步骤序号）：
+ * - 1-1 已到位：三批完整有效，偏差均在允许值内；
+ * - 1-2 顶升中：最新一批缺 P4 判无效，沿用上一有效批次，可继续推进；
+ * - 2-1 顶升中：最新有效批同步偏差超 1.5 mm 且 P3 应力达关注值，推进到位被拦截。
+ */
+const SEED_READING_BATCHES: Record<string, SeedBatch[]> = {
+  '1-1': [
+    {
+      recordedAt: dateTimeText(0, 9, 5),
+      points: [
+        { code: 'P1', disp: 0.78, stress: 8.2 },
+        { code: 'P2', disp: 0.82, stress: 8.5 },
+        { code: 'P3', disp: 0.75, stress: 8.1 },
+        { code: 'P4', disp: 0.8, stress: 8.4 },
+      ],
+    },
+    {
+      recordedAt: dateTimeText(0, 9, 20),
+      points: [
+        { code: 'P1', disp: 1.52, stress: 8.8 },
+        { code: 'P2', disp: 1.58, stress: 9.0 },
+        { code: 'P3', disp: 1.48, stress: 8.6 },
+        { code: 'P4', disp: 1.55, stress: 8.9 },
+      ],
+    },
+    {
+      recordedAt: dateTimeText(0, 9, 35),
+      points: [
+        { code: 'P1', disp: 2.96, stress: 9.2 },
+        { code: 'P2', disp: 3.02, stress: 9.5 },
+        { code: 'P3', disp: 2.98, stress: 9.1 },
+        { code: 'P4', disp: 3.04, stress: 9.4 },
+      ],
+    },
+  ],
+  '1-2': [
+    {
+      recordedAt: dateTimeText(0, 10, 5),
+      points: [
+        { code: 'P1', disp: 1.02, stress: 8.4 },
+        { code: 'P2', disp: 1.08, stress: 8.7 },
+        { code: 'P3', disp: 0.98, stress: 8.3 },
+        { code: 'P4', disp: 1.05, stress: 8.6 },
+      ],
+    },
+    {
+      recordedAt: dateTimeText(0, 10, 20),
+      points: [
+        { code: 'P1', disp: 2.05, stress: 9.0 },
+        { code: 'P2', disp: 2.12, stress: 9.3 },
+        { code: 'P3', disp: 1.98, stress: 8.8 },
+        { code: 'P4', disp: 2.08, stress: 9.1 },
+      ],
+    },
+    {
+      // 最新复核缺测 P4：批次无效，平均值/偏差/到位判断沿用 10:20 有效批次
+      recordedAt: dateTimeText(0, 10, 35),
+      points: [
+        { code: 'P1', disp: 3.12, stress: 9.4 },
+        { code: 'P2', disp: 4.35, stress: 9.8 },
+        { code: 'P3', disp: 3.05, stress: 9.2 },
+      ],
+    },
+  ],
+  '2-1': [
+    {
+      recordedAt: dateTimeText(0, 9, 10),
+      points: [
+        { code: 'P1', disp: 1.24, stress: 8.6 },
+        { code: 'P2', disp: 1.3, stress: 8.9 },
+        { code: 'P3', disp: 1.2, stress: 12.4 },
+        { code: 'P4', disp: 1.28, stress: 9.0 },
+      ],
+    },
+    {
+      recordedAt: dateTimeText(0, 9, 25),
+      points: [
+        { code: 'P1', disp: 2.62, stress: 9.2 },
+        { code: 'P2', disp: 2.7, stress: 9.5 },
+        { code: 'P3', disp: 2.58, stress: 9.0 },
+        { code: 'P4', disp: 2.66, stress: 9.4 },
+      ],
+    },
+    {
+      // 最新有效批：P2 偏高致极差 2.06 mm（≥1.5），且 P3 应力 12.6 MPa 达关注值 → 拦截到位
+      recordedAt: dateTimeText(0, 9, 40),
+      points: [
+        { code: 'P1', disp: 3.58, stress: 9.8 },
+        { code: 'P2', disp: 5.64, stress: 10.2 },
+        { code: 'P3', disp: 3.62, stress: 12.6 },
+        { code: 'P4', disp: 3.7, stress: 10.0 },
+      ],
+    },
+  ],
+};
+
 /**
  * 播种：2 座桥梁 × 各 2~3 个墩台 × 各 2~3 个支座 + 顶升步骤 + 每步测点读数 + 分步验收。
  * 数据父子互相引用（bridgeId / pierId / bearingId / stepId），全部页面打开即有内容。
  */
 async function seedDatabase(): Promise<void> {
-  const random = makeRandom(20260824);
   const stamp = new Date().toISOString();
 
   const bridges: BridgeRow[] = [];
@@ -311,23 +411,46 @@ async function seedDatabase(): Promise<void> {
 
       // 未开始的步骤不产生读数
       if (stepSpec.state === 'idle') return;
+
+      // 同一步骤、同一记录时间的读数构成一批复核（整批快照口径）。
+      // 读数按桥梁 + 步骤显式编排，覆盖：有效批通过、最新批缺测沿用上一批、有效批超限拦截。
       const pointCount = stepSpec.sync === 'single' ? 1 : 4;
-      const rounds = stepSpec.state === 'arrived' ? 3 : 2;
-      for (let round = 0; round < rounds; round += 1) {
-        for (let point = 0; point < pointCount; point += 1) {
-          const base = stepSpec.targetLiftMm * ((round + 1) / (rounds + 1));
-          const jitter = (random() - 0.5) * 1.4;
+      const seedBatches = SEED_READING_BATCHES[`${bridgeIndex + 1}-${stepIndex + 1}`] ?? [];
+      seedBatches.forEach((batch, batchIndex) => {
+        batch.points.forEach((point) => {
           readings.push({
-            id: `read-${stepId}-${round + 1}-${point + 1}`,
+            id: `read-${stepId}-${batchIndex + 1}-${point.code}`,
             stepId,
-            pointCode: `P${point + 1}`,
-            displacementMm: Number((base + jitter).toFixed(2)),
-            stressMpa: Number((7 + random() * 6).toFixed(2)),
-            recordedAt: dateTimeText(0, 9 + round, 5 + point * 5),
-            operator: operators[(stepIndex + round) % operators.length],
+            pointCode: point.code,
+            displacementMm: point.disp,
+            stressMpa: point.stress,
+            recordedAt: batch.recordedAt,
+            operator: operators[(stepIndex + batchIndex) % operators.length],
             createdAt: stamp,
             revision: ROW_REVISION,
           });
+        });
+      });
+
+      // 兜底：未显式编排的步骤给两轮完整有效批次，保证页面有数据
+      if (seedBatches.length === 0) {
+        const rounds = stepSpec.state === 'arrived' ? 3 : 2;
+        for (let round = 0; round < rounds; round += 1) {
+          const recordedAt = dateTimeText(0, 9 + round, 5);
+          for (let point = 0; point < pointCount; point += 1) {
+            const base = stepSpec.targetLiftMm * ((round + 1) / (rounds + 1));
+            readings.push({
+              id: `read-${stepId}-${round + 1}-${point + 1}`,
+              stepId,
+              pointCode: `P${point + 1}`,
+              displacementMm: Number((base + (point - 1.5) * 0.05).toFixed(2)),
+              stressMpa: Number((8 + point * 0.5).toFixed(2)),
+              recordedAt,
+              operator: operators[(stepIndex + round) % operators.length],
+              createdAt: stamp,
+              revision: ROW_REVISION,
+            });
+          }
         }
       }
     });

@@ -14,14 +14,19 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { STEP_STATE_LABEL, SYNC_REQUIREMENT_LABEL, type StepView } from '../../../core/types/step';
 import {
-  POINT_CODES,
   STRESS_ALERT_MPA,
   meanDisplacement,
   readingDateHint,
-  suggestPointCodes,
   syncDeviationMm,
   type ReadingView,
 } from '../../../core/types/reading';
+import {
+  analyzeStepBatches,
+  evaluateArrivalGate,
+  expectedPointCodes,
+  type ArrivalGate,
+  type ReviewBatch,
+} from '../../../core/utils/batch';
 import { ROUTES } from '../../../core/router/app.routes';
 import { stepActions } from '../../../core/store/step.actions';
 import { buildStepViews, selectStepStats } from '../../../core/store/step.selectors';
@@ -94,28 +99,56 @@ interface BatchRow {
     </div>
 
     <div class="stat-grid">
-      <app-stat-badge title="测点读数" [value]="stats().readingCount" [suffix]="'条'" color="#1565c0" />
+      <app-stat-badge title="测点读数（原始全保留）" [value]="stats().readingCount" [suffix]="'条'" color="#1565c0" />
       <app-stat-badge
-        title="当前步骤平均位移"
+        title="有效批平均位移"
         [value]="formatMm(currentAverage())"
         color="#00897b"
-        [hint]="selectedStepLabel()"
+        [hint]="effectiveBatchHint()"
       />
       <app-stat-badge
-        title="同步偏差"
+        title="有效批同步偏差"
         [value]="formatMm(currentDeviation())"
         [percent]="deviationShare()"
         [color]="syncColor()"
-        [hint]="'允许值 1.5 mm，当前 ' + syncLevelText()"
+        [hint]="'允许值 1.5 mm，' + syncLevelText()"
       />
       <app-stat-badge
-        title="超限读数"
+        title="有效批超限测点"
         [value]="exceedCount()"
-        [suffix]="'条'"
+        [suffix]="'个'"
         color="#c62828"
         [hint]="'限位值 ' + (selectedStep()?.limitMm ?? 0) + ' mm，应力关注值 ' + stressAlert + ' MPa'"
       />
     </div>
+
+    @if (selectedStep(); as step) {
+      @if (step.state === 'lifting') {
+        @if (arrivalGate(); as gate) {
+          <div
+            class="gb-gate-banner"
+            [class.is-blocked]="!gate.allowed"
+            [class.is-ok]="gate.allowed"
+          >
+            <div class="gb-gate-title">
+              <mat-icon>{{ gate.allowed ? 'verified' : 'block' }}</mat-icon>
+              {{ gate.title }}
+            </div>
+            @if (gate.latestInvalidNote) {
+              <div class="gb-gate-note">{{ gate.latestInvalidNote }}</div>
+            }
+            @for (reason of gate.reasons; track reason) {
+              <div class="gb-gate-reason">· {{ reason }}</div>
+            }
+            @if (gate.allowed) {
+              <div class="gb-gate-note">
+                当前有效批次同步偏差、各位移与应力均未超限，可在步骤编排页推进为「已到位」。
+              </div>
+            }
+          </div>
+        }
+      }
+    }
 
     <app-filter-bar
       keywordLabel="关键字"
@@ -176,6 +209,10 @@ interface BatchRow {
             </button>
           </div>
           <div class="gb-hint">{{ dateHint() }}</div>
+          <div class="gb-hint">
+            应有测点：<b>{{ expectedPointsLabel() }}</b>；同一步骤、同一记录时间的读数视为一批复核，
+            平均值 / 同步偏差 / 超限统计 / 到位判断只取最近一个测点齐全的批次。
+          </div>
 
           @if (selectedStep(); as step) {
             <div class="gb-table-wrap" style="margin-top: 10px">
@@ -246,7 +283,9 @@ interface BatchRow {
     </div>
 
     <div class="gb-section">
-      <div class="gb-card-title" style="margin-bottom: 8px">已录入读数（{{ filtered().length }} 条）</div>
+      <div class="gb-card-title" style="margin-bottom: 8px">
+        已录入读数（{{ filtered().length }} 条，原始记录全部保留）
+      </div>
       @if (filtered().length === 0) {
         <app-empty-panel
           title="暂无测点读数"
@@ -262,9 +301,10 @@ interface BatchRow {
                 <th>桥梁</th>
                 <th>测点</th>
                 <th>位移</th>
-                <th>相对偏差</th>
+                <th>批内相对偏差</th>
                 <th>应力</th>
-                <th>记录时间</th>
+                <th>记录时间（批次）</th>
+                <th>批次状态</th>
                 <th>记录人</th>
                 <th>判定</th>
                 <th style="width: 90px">操作</th>
@@ -272,23 +312,40 @@ interface BatchRow {
             </thead>
             <tbody>
               @for (reading of filtered(); track reading.id) {
-                <tr>
+                <tr [class.row-invalid]="!reading.batchValid" [class.row-effective]="reading.batchEffective">
                   <td>#{{ reading.stepSeq }}</td>
                   <td>{{ reading.bridgeName }}</td>
                   <td class="gb-mono">{{ reading.pointCode }}</td>
                   <td>{{ formatMm(reading.displacementMm) }}</td>
-                  <td [style.color]="reading.deviationMm === 0 ? '#2e7d32' : '#ed6c02'">
-                    {{ formatMm(reading.deviationMm) }}
+                  <td [style.color]="!reading.batchValid ? '#9e9e9e' : reading.deviationMm === 0 ? '#2e7d32' : '#ed6c02'">
+                    @if (reading.batchValid) {
+                      {{ formatMm(reading.deviationMm) }}
+                    } @else {
+                      —
+                    }
                   </td>
                   <td [style.color]="reading.stressAlert ? '#c62828' : '#2e7d32'">
                     {{ formatStress(reading.stressMpa) }}
                   </td>
                   <td>{{ reading.recordedAt }}</td>
+                  <td>
+                    <span class="gb-batch-tag" [style.color]="batchTagColor(reading)">
+                      {{ batchTag(reading) }}
+                    </span>
+                    @if (!reading.batchValid && reading.batchMissingPoints.length > 0) {
+                      <div class="gb-hint" style="color: #c62828">
+                        缺 {{ reading.batchMissingPoints.join('、') }}
+                      </div>
+                    }
+                  </td>
                   <td>{{ reading.operator }}</td>
                   <td>
                     <mat-chip-set>
-                      <mat-chip [style.background]="readingColor(reading)" [style.color]="'#fff'">
-                        {{ readingLevelText(reading) }}
+                      <mat-chip
+                        [style.background]="reading.batchValid ? readingColor(reading) : '#9e9e9e'"
+                        [style.color]="'#fff'"
+                      >
+                        {{ reading.batchValid ? readingLevelText(reading) : '不参评' }}
                       </mat-chip>
                     </mat-chip-set>
                   </td>
@@ -313,6 +370,55 @@ interface BatchRow {
         border: 1px solid rgba(22, 34, 46, 0.2);
         border-radius: 6px;
         font-size: 13px;
+      }
+      .gb-gate-banner {
+        margin: 10px 0 4px;
+        padding: 12px 14px;
+        border-radius: 8px;
+        border: 1px solid rgba(22, 34, 46, 0.12);
+      }
+      .gb-gate-banner.is-blocked {
+        background: #ffebee;
+        border-color: #ef9a9a;
+      }
+      .gb-gate-banner.is-ok {
+        background: #e8f5e9;
+        border-color: #a5d6a7;
+      }
+      .gb-gate-title {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 600;
+        color: #16222e;
+      }
+      .gb-gate-banner.is-blocked .gb-gate-title {
+        color: #b71c1c;
+      }
+      .gb-gate-banner.is-ok .gb-gate-title {
+        color: #1b5e20;
+      }
+      .gb-gate-reason {
+        margin-top: 6px;
+        color: #b71c1c;
+        font-size: 13px;
+      }
+      .gb-gate-note {
+        margin-top: 6px;
+        color: #546e7a;
+        font-size: 12px;
+      }
+      .gb-batch-tag {
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      tr.row-invalid td {
+        background: #fafafa;
+        color: #9e9e9e;
+      }
+      tr.row-effective {
+        box-shadow: inset 3px 0 0 #2e7d32;
       }
     `,
   ],
@@ -378,16 +484,33 @@ export class ReadingEntryPage {
     { key: 'level', label: '判定', options: ['正常', '关注', '超限'] },
   ]);
 
-  /** 读数视图：带步骤上下文与相对偏差 */
+  /** 各步骤的批次分析（按步骤 + 记录时间分组，标定最近有效批） */
+  readonly batchAnalyses: Signal<Map<string, ReturnType<typeof analyzeStepBatches>>> = computed(() => {
+    const result = new Map<string, ReturnType<typeof analyzeStepBatches>>();
+    for (const step of this.stepViews()) {
+      result.set(
+        step.id,
+        analyzeStepBatches(step.id, step.syncRequirement, this.readings(), step.limitMm),
+      );
+    }
+    return result;
+  });
+
+  /** 当前选中步骤的批次分析 */
+  readonly selectedAnalysis = computed(
+    () => (this.selectedStep() ? this.batchAnalyses().get(this.selectedStep()!.id) ?? null : null),
+  );
+
+  /** 读数视图：带步骤上下文、所属批次有效性与相对偏差（只在所属批完整时计算） */
   readonly readingViews: Signal<ReadingView[]> = computed(() => {
     const steps = new Map(this.stepViews().map((step) => [step.id, step]));
+    const analyses = this.batchAnalyses();
     return this.readings()
       .map((reading) => {
         const step = steps.get(reading.stepId);
-        const sameRound = this.readings().filter(
-          (item) => item.stepId === reading.stepId && item.recordedAt === reading.recordedAt,
-        );
-        const average = meanDisplacement(sameRound);
+        const analysis = analyses.get(reading.stepId);
+        const ownBatch = analysis?.batches.find((batch) => batch.recordedAt === reading.recordedAt) ?? null;
+        const batchValid = ownBatch?.valid ?? false;
         const limitMm = step?.limitMm ?? 0;
         return {
           ...reading,
@@ -395,7 +518,13 @@ export class ReadingEntryPage {
           bridgeId: step?.bridgeId ?? '',
           bridgeName: step?.bridgeName ?? '未归属桥梁',
           syncRequirement: step ? SYNC_REQUIREMENT_LABEL[step.syncRequirement] : '-',
-          deviationMm: Number((reading.displacementMm - average).toFixed(3)),
+          batchRecordedAt: reading.recordedAt,
+          batchValid,
+          batchEffective: analysis?.effectiveBatch?.recordedAt === reading.recordedAt,
+          batchMissingPoints: ownBatch?.missingPoints ?? [],
+          deviationMm: batchValid
+            ? Number((reading.displacementMm - (ownBatch?.averageMm ?? 0)).toFixed(3))
+            : 0,
           overLimit: limitMm > 0 && Math.abs(reading.displacementMm) >= limitMm,
           stressAlert: reading.stressMpa >= STRESS_ALERT_MPA,
         };
@@ -419,21 +548,31 @@ export class ReadingEntryPage {
     this.stepViews().find((step) => step.id === this.selectedStepId()) ?? null,
   );
 
-  readonly currentAverage = computed(() => {
+  /** 当前有效批次（最近一个覆盖全部应有测点的复核） */
+  readonly currentEffectiveBatch = computed<ReviewBatch | null>(() => this.selectedAnalysis()?.effectiveBatch ?? null);
+
+  /** 最近一批（可能缺测无效） */
+  readonly currentLatestBatch = computed<ReviewBatch | null>(() => this.selectedAnalysis()?.latestBatch ?? null);
+
+  /** 当前有效批次平均位移；无有效批次为 0（不再混入旧批次） */
+  readonly currentAverage = computed(() => this.currentEffectiveBatch()?.averageMm ?? 0);
+
+  /** 当前有效批次同步偏差；无有效批次为 0 */
+  readonly currentDeviation = computed(() => this.currentEffectiveBatch()?.syncDeviationMm ?? 0);
+
+  /** 到位闸门结论（顶升中 → 已到位 前的拦截判定） */
+  readonly arrivalGate: Signal<ArrivalGate | null> = computed(() => {
     const step = this.selectedStep();
-    if (!step) return 0;
-    return meanDisplacement(this.readings().filter((item) => item.stepId === step.id));
+    const analysis = this.selectedAnalysis();
+    if (!step || !analysis) return null;
+    return evaluateArrivalGate(analysis, { seq: step.seq, bridgeName: step.bridgeName, limitMm: step.limitMm });
   });
 
-  readonly currentDeviation = computed(() => {
-    const step = this.selectedStep();
-    if (!step) return 0;
-    return syncDeviationMm(this.readings().filter((item) => item.stepId === step.id));
-  });
+  /** 超限统计：只数当前有效批次内达到限位或应力关注值的测点 */
+  readonly exceedCount = computed(() => this.currentEffectiveBatch()?.exceedCount ?? 0);
 
-  readonly exceedCount = computed(() =>
-    this.readingViews().filter((reading) => reading.overLimit || reading.stressAlert).length,
-  );
+  /** 当前步骤全部批次（用于按批展示） */
+  readonly currentBatches = computed(() => this.selectedAnalysis()?.batches ?? []);
 
   readonly batchAverage = computed(() => meanDisplacement(this.batchRows()));
   readonly batchDeviation = computed(() => syncDeviationMm(this.batchRows()));
@@ -462,12 +601,6 @@ export class ReadingEntryPage {
     });
   }
 
-  selectedStepLabel(): string {
-    const step = this.selectedStep();
-    if (!step) return '未选择步骤';
-    return `#${step.seq} ${step.bridgeName} · 目标 ${step.targetLiftMm} mm · 限位 ${step.limitMm} mm`;
-  }
-
   dateHint(): string {
     const step = this.selectedStep();
     return readingDateHint(this.recordedAt().replace('T', ' '), step?.state ?? 'idle');
@@ -484,14 +617,14 @@ export class ReadingEntryPage {
     void this.router.navigate([], { relativeTo: this.route, queryParams, replaceUrl: true });
   }
 
-  /** 按同步要求生成测点行（同步 4 点、交叉 4 点、单点 1 点） */
+  /** 按同步要求生成测点行（应有测点：同步/交叉 4 点，单点 1 点） */
   regenerateRows(): void {
     const step = this.selectedStep();
     if (!step) {
       this.batchRows.set([]);
       return;
     }
-    const codes = step.syncRequirement === 'single' ? ['P1'] : suggestPointCodes(2).slice(0, 4);
+    const codes = expectedPointCodes(step.syncRequirement);
     this.batchRows.set(
       codes.map((pointCode) => ({ pointCode, displacementMm: step.targetLiftMm, stressMpa: 8 })),
     );
@@ -536,17 +669,56 @@ export class ReadingEntryPage {
     return 'ok';
   }
 
+  /** 当前有效批次等级；无有效批次时给关注档，提示先补齐复核 */
+  currentLevel(): ToleranceLevel {
+    const batch = this.currentEffectiveBatch();
+    if (!batch) return this.currentLatestBatch() ? 'watch' : 'ok';
+    return batch.level;
+  }
+
   syncColor(): string {
-    return TOLERANCE_HEX[this.currentDeviation() >= 1.5 ? 'exceed' : this.currentDeviation() >= 0.8 ? 'watch' : 'ok'];
+    return TOLERANCE_HEX[this.currentLevel()];
   }
 
   syncLevelText(): string {
-    const deviation = this.currentDeviation();
-    return TOLERANCE_LEVEL_LABEL[deviation >= 1.5 ? 'exceed' : deviation >= 0.8 ? 'watch' : 'ok'];
+    if (!this.currentEffectiveBatch()) {
+      return this.currentLatestBatch() ? '无有效批次' : '暂无复核';
+    }
+    return TOLERANCE_LEVEL_LABEL[this.currentLevel()];
   }
 
   deviationShare(): number {
     return Math.min(100, Number(((this.currentDeviation() / 1.5) * 100).toFixed(1)));
+  }
+
+  /** 当前有效批次时间说明 */
+  effectiveBatchHint(): string {
+    const effective = this.currentEffectiveBatch();
+    const latest = this.currentLatestBatch();
+    if (!latest) return '该步骤还没有复核批次';
+    if (!effective) {
+      return `最新批次 ${latest.recordedAt} 缺测（${latest.missingPoints.join('、') || '测点重复'}），无有效批次可用`;
+    }
+    if (!latest.valid) {
+      return `最新批次 ${latest.recordedAt} 缺测无效，已沿用 ${effective.recordedAt} 有效批次`;
+    }
+    return `当前有效批次：${effective.recordedAt}`;
+  }
+
+  /** 单条读数的批次角标文案 */
+  batchTag(reading: ReadingView): string {
+    if (reading.batchEffective) return '当前有效批';
+    return reading.batchValid ? '历史有效批' : '缺测无效批';
+  }
+
+  batchTagColor(reading: ReadingView): string {
+    if (reading.batchEffective) return '#2e7d32';
+    return reading.batchValid ? '#607d8b' : '#c62828';
+  }
+
+  expectedPointsLabel(): string {
+    const step = this.selectedStep();
+    return step ? expectedPointCodes(step.syncRequirement).join('、') : '';
   }
 
   readingLevelText(reading: ReadingView): string {
@@ -565,6 +737,21 @@ export class ReadingEntryPage {
     const rows = this.batchRows();
     if (!step || rows.length === 0) return;
     const recorded = this.recordedAt().replace('T', ' ');
+    const expected = expectedPointCodes(step.syncRequirement);
+    const covered = new Set(rows.map((row) => row.pointCode));
+    const missing = expected.filter((code) => !covered.has(code));
+    if (missing.length > 0) {
+      this.snackBar.open(`本批缺少应有测点 ${missing.join('、')}，补齐后再提交（原始记录仍会保留）`, '关闭', {
+        duration: 3600,
+      });
+      return;
+    }
+    const sameTime = this.readings().some(
+      (item) => item.stepId === step.id && item.recordedAt === recorded,
+    );
+    if (sameTime && !confirm(`步骤在 ${recorded} 已有一批复核记录，仍要再提交一批同时间记录吗？`)) {
+      return;
+    }
     const payload = rows.map((row) => ({
       stepId: step.id,
       pointCode: row.pointCode,
@@ -577,11 +764,11 @@ export class ReadingEntryPage {
       payload.map((row) => ({ ...row, id: newId('read'), ...rowMeta() })),
     );
     this.idb.emitChange();
-    this.snackBar.open(
-      `已录入 ${payload.length} 条读数，同步偏差 ${formatMm(syncDeviationMm(rows))}`,
-      '关闭',
-      { duration: 3000 },
-    );
+    const deviation = syncDeviationMm(rows);
+    const suffix = deviation >= 1.5 ? '，同步偏差已达 1.5 mm，到位会被拦截' : '';
+    this.snackBar.open(`已录入 ${payload.length} 条读数（一批），本批同步偏差 ${formatMm(deviation)}${suffix}`, '关闭', {
+      duration: 3200,
+    });
   }
 
   async deleteReading(reading: ReadingView): Promise<void> {

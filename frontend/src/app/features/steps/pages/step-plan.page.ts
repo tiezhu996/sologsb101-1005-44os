@@ -39,7 +39,11 @@ import {
 } from '../../../core/store/step.selectors';
 import { selectBridges } from '../../../core/store/bridge.selectors';
 import { formatLift, formatMm, share } from '../../../core/utils/unit';
-import { TOLERANCE_HEX, TOLERANCE_LEVEL_LABEL } from '../../../core/utils/tolerance';
+import {
+  TOLERANCE_HEX,
+  TOLERANCE_LEVEL_LABEL,
+} from '../../../core/utils/tolerance';
+import { evaluateArrivalGate, type ArrivalGate } from '../../../core/utils/batch';
 import { StatBadgeComponent } from '../../../shared/components/common/stat-badge.component';
 import { EmptyPanelComponent } from '../../../shared/components/common/empty-panel.component';
 import { FilterBarComponent, type FilterSelectSpec } from '../../../shared/components/common/filter-bar.component';
@@ -131,6 +135,40 @@ export class StepDialogComponent {
   }
 }
 
+/** 到位拦截对话框数据 */
+export interface GateDialogData {
+  gate: ArrivalGate;
+  seq: number;
+}
+
+/** 推进「已到位」前的复核拦截对话框 */
+@Component({
+  selector: 'app-arrival-gate-dialog',
+  standalone: true,
+  imports: [MatDialogModule, MatButtonModule, MatIconModule],
+  template: `
+    <h2 mat-dialog-title [style.color]="'#b71c1c'">
+      <mat-icon style="vertical-align: middle; margin-right: 6px">block</mat-icon>
+      {{ data.gate.title }}
+    </h2>
+    <mat-dialog-content>
+      @if (data.gate.latestInvalidNote) {
+        <p class="gb-hint" style="color: #b26a00">{{ data.gate.latestInvalidNote }}</p>
+      }
+      <p style="margin: 8px 0; color: #546e7a">步骤 #{{ data.seq }} 存在以下问题，纠偏并重新复核齐全后方可到位：</p>
+      @for (reason of data.gate.reasons; track reason) {
+        <p style="margin: 6px 0; color: #b71c1c">· {{ reason }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-flat-button color="primary" mat-dialog-close>知道了，先整改</button>
+    </mat-dialog-actions>
+  `,
+})
+export class ArrivalGateDialogComponent {
+  constructor(@Inject(MAT_DIALOG_DATA) readonly data: GateDialogData) {}
+}
+
 /**
  * /steps 顶升步骤编排
  * 分级 / 同步 / 限位参数编排与顺序调整、累计顶升量校验；
@@ -195,7 +233,7 @@ export class StepDialogComponent {
         [value]="stats().readingCount"
         [suffix]="'条'"
         color="#3949ab"
-        hint="同步偏差按步骤内读数极差计算"
+        hint="同步偏差按最近一个测点齐全的复核批次计算"
       />
     </div>
 
@@ -266,11 +304,19 @@ export class StepDialogComponent {
                   </mat-chip-set>
                 </td>
                 <td>
-                  {{ step.readingCount }} 条
+                  {{ step.readingCount }} 条 / {{ step.batchCount }} 批
                   @if (step.syncDeviationMm !== null) {
                     <span [style.color]="levelColor(step)">
                       / 偏差 {{ formatMm(step.syncDeviationMm) }}（{{ levelLabel(step) }}）
                     </span>
+                    <div class="gb-hint">有效批 {{ step.effectiveBatchAt }}</div>
+                  }
+                  @if (step.latestBatchValid === false) {
+                    <div class="gb-hint" style="color: #b26a00">
+                      最新批缺 {{ step.latestMissingPoints.join('、') || '重复' }}，已沿用旧批
+                    </div>
+                  } @else if (step.latestBatchValid === null && step.readingCount === 0) {
+                    <span class="gb-hint">暂无复核</span>
                   }
                 </td>
                 <td class="gb-hint">{{ step.validation }}</td>
@@ -527,6 +573,21 @@ export class StepPlanPage {
   }
 
   advance(step: StepView, next: StepState): void {
+    // 顶升中 → 已到位：只看最近一个覆盖全部应有测点的有效批次，超限强制拦截
+    if (next === 'arrived') {
+      const gate = evaluateArrivalGate(step.batchAnalysis, {
+        seq: step.seq,
+        bridgeName: step.bridgeName,
+        limitMm: step.limitMm,
+      });
+      if (!gate.allowed) {
+        this.dialog.open(ArrivalGateDialogComponent, {
+          width: '620px',
+          data: { gate, seq: step.seq } satisfies GateDialogData,
+        });
+        return;
+      }
+    }
     this.store.dispatch(stepActions.advanceState({ id: step.id, next }));
     this.notify(`步骤 #${step.seq} 已推进为${STEP_STATE_LABEL[next]}`);
   }
