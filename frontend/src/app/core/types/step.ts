@@ -63,10 +63,22 @@ export interface StepView extends Step {
   cumulativeLiftMm: number;
   /** 累计顶升量与限位值的关系 */
   overLimit: boolean;
-  /** 该步骤的测点读数条数 */
+  /** 该步骤的原始测点读数条数（全部批次、全部保留） */
   readingCount: number;
-  /** 同步偏差（mm），无读数为 null */
+  /** 同步偏差（mm）：只取最近有效批次，无有效批次为 null */
   syncDeviationMm: number | null;
+  /** 当前有效批次的记录时间（最近一批覆盖全部应有测点的复核），无则 null */
+  activeBatchAt: string | null;
+  /** 最新批次是否缺测无效（此时判断沿用上一批有效结果） */
+  latestBatchInvalid: boolean;
+  /** 最近一批（无论有效与否）的记录时间 */
+  latestBatchAt: string | null;
+  /** 当前有效批次的平均位移（mm），无有效批次为 null */
+  activeAverageMm: number | null;
+  /** 当前有效批次超限测点数 */
+  activeExceedCount: number;
+  /** 有效复核批次数 */
+  validBatchCount: number;
   /** 校验结论文案 */
   validation: string;
 }

@@ -313,17 +313,38 @@ async function seedDatabase(): Promise<void> {
       if (stepSpec.state === 'idle') return;
       const pointCount = stepSpec.sync === 'single' ? 1 : 4;
       const rounds = stepSpec.state === 'arrived' ? 3 : 2;
+      // 同一批复核共用同一记录时间（整批快照口径）
       for (let round = 0; round < rounds; round += 1) {
-        for (let point = 0; point < pointCount; point += 1) {
+        // 演示「缺测批次无效、沿用上一批有效结果」：
+        // 沙河大桥第 2 级（顶升中）最新一批只测了 3 个测点
+        const batchPointCount =
+          bridgeIndex === 0 && stepIndex === 1 && round === rounds - 1 ? 3 : pointCount;
+        // 演示到位拦截：
+        // - 沙河大桥第 2 级首批埋入一个应力关注值测点（最新批缺测时仍沿用该批拦住）
+        // - 云溪河特大桥第 1 级（顶升中）最新一批同步偏差达到 1.5 mm
+        const stressAlertRound = bridgeIndex === 0 && stepIndex === 1 && round === 0;
+        const syncExceedRound =
+          bridgeIndex === 1 && stepIndex === 0 && round === rounds - 1;
+        const roundStamp = dateTimeText(0, 9 + round, 5);
+        for (let point = 0; point < batchPointCount; point += 1) {
           const base = stepSpec.targetLiftMm * ((round + 1) / (rounds + 1));
-          const jitter = (random() - 0.5) * 1.4;
+          let displacement: number;
+          if (syncExceedRound) {
+            // P1 抬高 0.9、P4 压低 0.85：整批极差约 1.75 mm ≥ 1.5 mm
+            const offsets = [0.9, 0.1, -0.2, -0.85];
+            displacement = Number((base + offsets[point % offsets.length]).toFixed(2));
+          } else {
+            const jitter = (random() - 0.5) * 0.6;
+            displacement = Number((base + jitter).toFixed(2));
+          }
+          const stress = stressAlertRound && point === 1 ? 12.6 : Number((7 + random() * 4).toFixed(2));
           readings.push({
             id: `read-${stepId}-${round + 1}-${point + 1}`,
             stepId,
             pointCode: `P${point + 1}`,
-            displacementMm: Number((base + jitter).toFixed(2)),
-            stressMpa: Number((7 + random() * 6).toFixed(2)),
-            recordedAt: dateTimeText(0, 9 + round, 5 + point * 5),
+            displacementMm: displacement,
+            stressMpa: stress,
+            recordedAt: roundStamp,
             operator: operators[(stepIndex + round) % operators.length],
             createdAt: stamp,
             revision: ROW_REVISION,

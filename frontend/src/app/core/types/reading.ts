@@ -33,11 +33,19 @@ export interface ReadingView extends Reading {
   bridgeId: string;
   bridgeName: string;
   syncRequirement: string;
-  /** 同步骤内相对平均位移的偏差（mm） */
-  deviationMm: number;
-  /** 是否超过限位值 */
+  /** 所属批次（同步骤 + 同记录时间）内相对平均位移的偏差（mm）；批次无效时为 null */
+  deviationMm: number | null;
+  /** 所属批次是否为覆盖全部应有测点的有效批次 */
+  batchValid: boolean;
+  /** 所属批次是否为当前有效批次（统计与到位判断只认该批） */
+  inActiveBatch: boolean;
+  /** 是否为该步骤的最新批次（最新批次可能缺测无效） */
+  inLatestBatch: boolean;
+  /** 批次无效原因（缺测 / 重复测点），有效批次为空串 */
+  batchInvalidNote: string;
+  /** 是否超过限位值（仅当前有效批次参与判定） */
   overLimit: boolean;
-  /** 应力是否超过关注值 */
+  /** 应力是否超过关注值（仅当前有效批次参与判定） */
   stressAlert: boolean;
 }
 

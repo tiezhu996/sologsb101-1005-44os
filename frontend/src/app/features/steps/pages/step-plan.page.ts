@@ -32,6 +32,7 @@ import { ROUTES } from '../../../core/router/app.routes';
 import { stepActions } from '../../../core/store/step.actions';
 import {
   buildStepViews,
+  selectArrivalGates,
   selectStepAverages,
   selectStepStats,
   selectSyncHints,
@@ -45,6 +46,7 @@ import { EmptyPanelComponent } from '../../../shared/components/common/empty-pan
 import { FilterBarComponent, type FilterSelectSpec } from '../../../shared/components/common/filter-bar.component';
 import type { BridgeRow, ReadingRow, StepRow } from '../../../core/utils/db';
 import type { ToleranceLevel } from '../../../core/utils/tolerance';
+import type { ArrivalGate } from '../../../core/utils/reading-batch';
 
 /** 顶升步骤表单对话框数据 */
 export interface StepDialogData {
@@ -195,7 +197,7 @@ export class StepDialogComponent {
         [value]="stats().readingCount"
         [suffix]="'条'"
         color="#3949ab"
-        hint="同步偏差按步骤内读数极差计算"
+        hint="同步偏差只取当前有效批次（整批快照）的极差"
       />
     </div>
 
@@ -271,6 +273,16 @@ export class StepDialogComponent {
                     <span [style.color]="levelColor(step)">
                       / 偏差 {{ formatMm(step.syncDeviationMm) }}（{{ levelLabel(step) }}）
                     </span>
+                    <div class="gb-hint" [matTooltip]="'只采用当前有效批次（整批快照）的同步偏差'">
+                      有效批 {{ step.validBatchCount }} · {{ step.activeBatchAt }}
+                    </div>
+                  } @else if (step.readingCount > 0) {
+                    <span style="color: #c62828">无有效批次</span>
+                  }
+                  @if (step.latestBatchInvalid) {
+                    <div style="color: #ed6c02; font-size: 12px" [matTooltip]="step.validation">
+                      最新批 {{ step.latestBatchAt }} 缺测无效，已沿用上一批
+                    </div>
                   }
                 </td>
                 <td class="gb-hint">{{ step.validation }}</td>
@@ -407,6 +419,10 @@ export class StepPlanPage {
   );
   readonly syncHints = toSignal(this.store.select(selectSyncHints), { initialValue: [] });
   readonly stepAverages = toSignal(this.store.select(selectStepAverages), { initialValue: {} });
+  /** 各步骤顶升中 → 已到位 的到位拦截判断（依据当前有效批次） */
+  readonly arrivalGates: Signal<Record<string, ArrivalGate>> = toSignal(this.store.select(selectArrivalGates), {
+    initialValue: {} as Record<string, ArrivalGate>,
+  });
 
   readonly stepViews: Signal<StepView[]> = computed(() =>
     buildStepViews(this.steps(), this.readings(), this.bridges()),
@@ -436,7 +452,9 @@ export class StepPlanPage {
   });
 
   readonly okSteps = computed(() =>
-    this.filtered().filter((step) => (this.syncLevels()[step.id] ?? 'ok') === 'ok' && !step.overLimit),
+    this.filtered().filter(
+      (step) => step.syncDeviationMm !== null && (this.syncLevels()[step.id] ?? 'ok') === 'ok' && !step.overLimit,
+    ),
   );
   readonly exceedSteps = computed(() =>
     this.filtered().filter((step) => step.overLimit || this.syncLevels()[step.id] === 'exceed'),
@@ -527,6 +545,21 @@ export class StepPlanPage {
   }
 
   advance(step: StepView, next: StepState): void {
+    // 顶升中 → 已到位：当前有效批次同步偏差达到 1.5mm，或任一测点达到位移限位 / 应力关注值时拦截
+    if (step.state === 'lifting' && next === 'arrived') {
+      const gate = this.arrivalGates()[step.id];
+      if (gate?.blocked) {
+        const head = gate.noValidBatch
+          ? `步骤 #${step.seq} 不能推进为已到位：`
+          : `步骤 #${step.seq} 当前有效复核批次不满足到位条件，已拦住本次推进：`;
+        const detail = gate.reasons.map((reason) => `· ${reason}`).join('\n');
+        const tail = gate.noValidBatch
+          ? '\n请补齐全部应有测点后重新提交一整批复核。'
+          : '\n请调平 / 排查后重新提交一整批复核，再推进到位。';
+        alert(`${head}\n${detail}${tail}`);
+        return;
+      }
+    }
     this.store.dispatch(stepActions.advanceState({ id: step.id, next }));
     this.notify(`步骤 #${step.seq} 已推进为${STEP_STATE_LABEL[next]}`);
   }
